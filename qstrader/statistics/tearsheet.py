@@ -19,7 +19,11 @@ import os
 class TearsheetStatistics(AbstractStatistics):
     """
     """
-    def __init__(self, config, portfolio_handler, title=None, benchmark=None):
+    def __init__(
+        self, config, portfolio_handler,
+        title=None, benchmark=None, periods=252,
+        rolling_sharpe=False
+    ):
         """
         Takes in a portfolio handler.
         """
@@ -28,6 +32,8 @@ class TearsheetStatistics(AbstractStatistics):
         self.price_handler = portfolio_handler.price_handler
         self.title = '\n'.join(title)
         self.benchmark = benchmark
+        self.periods = periods
+        self.rolling_sharpe = rolling_sharpe
         self.equity = {}
         self.equity_benchmark = {}
         self.log_scale = False
@@ -55,6 +61,12 @@ class TearsheetStatistics(AbstractStatistics):
         # Returns
         returns_s = equity_s.pct_change().fillna(0.0)
 
+        # Rolling Annualised Sharpe
+        rolling = returns_s.rolling(window=self.periods)
+        rolling_sharpe_s = np.sqrt(self.periods) * (
+            rolling.mean() / rolling.std()
+        )
+
         # Cummulative Returns
         cum_returns_s = np.exp(np.log(1 + returns_s).cumsum())
 
@@ -64,7 +76,9 @@ class TearsheetStatistics(AbstractStatistics):
         statistics = {}
 
         # Equity statistics
-        statistics["sharpe"] = perf.create_sharpe_ratio(returns_s)
+        statistics["sharpe"] = perf.create_sharpe_ratio(
+            returns_s, self.periods
+        )
         statistics["drawdowns"] = dd_s
         # TODO: need to have max_drawdown so it can be printed at end of test
         statistics["max_drawdown"] = max_dd
@@ -72,6 +86,7 @@ class TearsheetStatistics(AbstractStatistics):
         statistics["max_drawdown_duration"] = dd_dur
         statistics["equity"] = equity_s
         statistics["returns"] = returns_s
+        statistics["rolling_sharpe"] = rolling_sharpe_s
         statistics["cum_returns"] = cum_returns_s
         statistics["positions"] = self._get_positions()
 
@@ -79,6 +94,10 @@ class TearsheetStatistics(AbstractStatistics):
         if self.benchmark is not None:
             equity_b = pd.Series(self.equity_benchmark).sort_index()
             returns_b = equity_b.pct_change().fillna(0.0)
+            rolling_b = returns_b.rolling(window=self.periods)
+            rolling_sharpe_b = np.sqrt(self.periods) * (
+                rolling_b.mean() / rolling_b.std()
+            )
             cum_returns_b = np.exp(np.log(1 + returns_b).cumsum())
             dd_b, max_dd_b, dd_dur_b = perf.create_drawdowns(cum_returns_b)
             statistics["sharpe_b"] = perf.create_sharpe_ratio(returns_b)
@@ -87,6 +106,7 @@ class TearsheetStatistics(AbstractStatistics):
             statistics["max_drawdown_duration_b"] = dd_dur_b
             statistics["equity_b"] = equity_b
             statistics["returns_b"] = returns_b
+            statistics["rolling_sharpe_b"] = rolling_sharpe_b
             statistics["cum_returns_b"] = cum_returns_b
 
         return statistics
@@ -141,8 +161,10 @@ class TearsheetStatistics(AbstractStatistics):
         y_axis_formatter = FuncFormatter(format_two_dec)
         ax.yaxis.set_major_formatter(FuncFormatter(y_axis_formatter))
         ax.xaxis.set_tick_params(reset=True)
+        ax.yaxis.grid(linestyle=':')
         ax.xaxis.set_major_locator(mdates.YearLocator(1))
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        ax.xaxis.grid(linestyle=':')
 
         if self.benchmark is not None:
             benchmark = stats['cum_returns_b']
@@ -158,9 +180,48 @@ class TearsheetStatistics(AbstractStatistics):
         ax.set_ylabel('Cumulative returns')
         ax.legend(loc='best')
         ax.set_xlabel('')
+        plt.setp(ax.get_xticklabels(), visible=True, rotation=0, ha='center')
 
         if self.log_scale:
             ax.set_yscale('log')
+
+        return ax
+
+    def _plot_rolling_sharpe(self, stats, ax=None, **kwargs):
+        """
+        Plots the curve of rolling Sharpe ratio.
+        """
+        def format_two_dec(x, pos):
+            return '%.2f' % x
+
+        sharpe = stats['rolling_sharpe']
+
+        if ax is None:
+            ax = plt.gca()
+
+        y_axis_formatter = FuncFormatter(format_two_dec)
+        ax.yaxis.set_major_formatter(FuncFormatter(y_axis_formatter))
+        ax.xaxis.set_tick_params(reset=True)
+        ax.yaxis.grid(linestyle=':')
+        ax.xaxis.set_major_locator(mdates.YearLocator(1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        ax.xaxis.grid(linestyle=':')
+
+        if self.benchmark is not None:
+            benchmark = stats['rolling_sharpe_b']
+            benchmark.plot(
+                lw=2, color='gray', label=self.benchmark, alpha=0.60,
+                ax=ax, **kwargs
+            )
+
+        sharpe.plot(lw=2, color='green', alpha=0.6, x_compat=False,
+                    label='Backtest', ax=ax, **kwargs)
+
+        ax.axvline(sharpe.index[252], linestyle="dashed", c="gray", lw=2)
+        ax.set_ylabel('Rolling Annualised Sharpe')
+        ax.legend(loc='best')
+        ax.set_xlabel('')
+        plt.setp(ax.get_xticklabels(), visible=True, rotation=0, ha='center')
 
         return ax
 
@@ -178,11 +239,17 @@ class TearsheetStatistics(AbstractStatistics):
 
         y_axis_formatter = FuncFormatter(format_perc)
         ax.yaxis.set_major_formatter(FuncFormatter(y_axis_formatter))
+        ax.yaxis.grid(linestyle=':')
+        ax.xaxis.set_tick_params(reset=True)
+        ax.xaxis.set_major_locator(mdates.YearLocator(1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        ax.xaxis.grid(linestyle=':')
 
         underwater = -100 * drawdown
         underwater.plot(ax=ax, lw=2, kind='area', color='red', alpha=0.3, **kwargs)
         ax.set_ylabel('')
         ax.set_xlabel('')
+        plt.setp(ax.get_xticklabels(), visible=True, rotation=0, ha='center')
         ax.set_title('Drawdown (%)', fontweight='bold')
         return ax
 
@@ -235,6 +302,7 @@ class TearsheetStatistics(AbstractStatistics):
 
         y_axis_formatter = FuncFormatter(format_perc)
         ax.yaxis.set_major_formatter(FuncFormatter(y_axis_formatter))
+        ax.yaxis.grid(linestyle=':')
 
         yly_ret = perf.aggregate_returns(returns, 'yearly') * 100.0
         yly_ret.plot(ax=ax, kind="bar")
@@ -242,6 +310,7 @@ class TearsheetStatistics(AbstractStatistics):
         ax.set_ylabel('')
         ax.set_xlabel('')
         ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
+        ax.xaxis.grid(False)
 
         return ax
 
@@ -263,9 +332,9 @@ class TearsheetStatistics(AbstractStatistics):
         ax.yaxis.set_major_formatter(FuncFormatter(y_axis_formatter))
 
         tot_ret = cum_returns[-1] - 1.0
-        cagr = perf.create_cagr(cum_returns)
-        sharpe = perf.create_sharpe_ratio(returns)
-        sortino = perf.create_sortino_ratio(returns)
+        cagr = perf.create_cagr(cum_returns, self.periods)
+        sharpe = perf.create_sharpe_ratio(returns, self.periods)
+        sortino = perf.create_sortino_ratio(returns, self.periods)
         rsq = perf.rsquared(range(cum_returns.shape[0]), cum_returns)
         dd, dd_max, dd_dur = perf.create_drawdowns(cum_returns)
         trd_yr = positions.shape[0] / ((returns.index[-1] - returns.index[0]).days / 365.0)
@@ -355,7 +424,8 @@ class TearsheetStatistics(AbstractStatistics):
         avg_loss_pct = '{:.2%}'.format(np.mean(pos[pos["trade_pct"] <= 0]["trade_pct"]))
         max_win_pct = '{:.2%}'.format(np.max(pos["trade_pct"]))
         max_loss_pct = '{:.2%}'.format(np.min(pos["trade_pct"]))
-        max_loss_dt = ''  # pos[pos["trade_pct"] == np.min(pos["trade_pct"])].entry_date.values[0]
+        # TODO: Position class needs entry date
+        max_loss_dt = 'TBD'  # pos[pos["trade_pct"] == np.min(pos["trade_pct"])].entry_date.values[0]
         avg_dit = '0.0'  # = '{:.2f}'.format(np.mean(pos.time_in_pos))
 
         ax.text(0.5, 8.9, 'Trade Winning %', fontsize=8)
@@ -505,22 +575,29 @@ class TearsheetStatistics(AbstractStatistics):
         sns.set_style("whitegrid")
         sns.set_palette("deep", desat=.6)
 
-        vertical_sections = 5
-        fig = plt.figure(figsize=(10, vertical_sections * 3))
-        fig.suptitle(self.title, y=0.96)
+        if self.rolling_sharpe:
+            offset_index = 1
+        else:
+            offset_index = 0
+        vertical_sections = 5 + offset_index
+        fig = plt.figure(figsize=(10, vertical_sections * 3.5))
+        fig.suptitle(self.title, y=0.94, weight='bold')
         gs = gridspec.GridSpec(vertical_sections, 3, wspace=0.25, hspace=0.5)
 
         stats = self.get_results()
-
         ax_equity = plt.subplot(gs[:2, :])
-        ax_drawdown = plt.subplot(gs[2, :], sharex=ax_equity)
-        ax_monthly_returns = plt.subplot(gs[3, :2])
-        ax_yearly_returns = plt.subplot(gs[3, 2])
-        ax_txt_curve = plt.subplot(gs[4, 0])
-        ax_txt_trade = plt.subplot(gs[4, 1])
-        ax_txt_time = plt.subplot(gs[4, 2])
+        if self.rolling_sharpe:
+            ax_sharpe = plt.subplot(gs[2, :])
+        ax_drawdown = plt.subplot(gs[2 + offset_index, :])
+        ax_monthly_returns = plt.subplot(gs[3 + offset_index, :2])
+        ax_yearly_returns = plt.subplot(gs[3 + offset_index, 2])
+        ax_txt_curve = plt.subplot(gs[4 + offset_index, 0])
+        ax_txt_trade = plt.subplot(gs[4 + offset_index, 1])
+        ax_txt_time = plt.subplot(gs[4 + offset_index, 2])
 
         self._plot_equity(stats, ax=ax_equity)
+        if self.rolling_sharpe:
+            self._plot_rolling_sharpe(stats, ax=ax_sharpe)
         self._plot_drawdown(stats, ax=ax_drawdown)
         self._plot_monthly_returns(stats, ax=ax_monthly_returns)
         self._plot_yearly_returns(stats, ax=ax_yearly_returns)
@@ -532,7 +609,7 @@ class TearsheetStatistics(AbstractStatistics):
         plt.show()
 
         if filename is not None:
-            fig.savefig(filename)
+            fig.savefig(filename, dpi=150, bbox_inches='tight')
 
     def get_filename(self, filename=""):
         if filename == "":

@@ -7,18 +7,18 @@ from .base import AbstractBarPriceHandler
 from ..event import BarEvent
 
 
-class YahooDailyCsvBarPriceHandler(AbstractBarPriceHandler):
+class IQFeedIntradayCsvBarPriceHandler(AbstractBarPriceHandler):
     """
-    YahooDailyBarPriceHandler is designed to read CSV files of
-    Yahoo Finance daily Open-High-Low-Close-Volume (OHLCV) data
+    IQFeedIntradayCsvBarPriceHandler is designed to read
+    intraday bar CSV files downloaded from DTN IQFeed, consisting
+    of Open-Low-High-Close-Volume-OpenInterest (OHLCVI) data
     for each requested financial instrument and stream those to
     the provided events queue as BarEvents.
     """
     def __init__(
         self, csv_dir, events_queue,
         init_tickers=None,
-        start_date=None, end_date=None,
-        calc_adj_returns=False
+        start_date=None, end_date=None
     ):
         """
         Takes the CSV directory, the events queue and a possible
@@ -36,9 +36,6 @@ class YahooDailyCsvBarPriceHandler(AbstractBarPriceHandler):
         self.start_date = start_date
         self.end_date = end_date
         self.bar_stream = self._merge_sort_ticker_data()
-        self.calc_adj_returns = calc_adj_returns
-        if self.calc_adj_returns:
-            self.adj_close_returns = []
 
     def _open_ticker_price_csv(self, ticker):
         """
@@ -47,12 +44,14 @@ class YahooDailyCsvBarPriceHandler(AbstractBarPriceHandler):
         them into a pandas DataFrame, stored in a dictionary.
         """
         ticker_path = os.path.join(self.csv_dir, "%s.csv" % ticker)
-        self.tickers_data[ticker] = pd.io.parsers.read_csv(
-            ticker_path, header=0, parse_dates=True,
-            index_col=0, names=(
-                "Date", "Open", "High", "Low",
-                "Close", "Volume", "Adj Close"
-            )
+
+        self.tickers_data[ticker] = pd.read_csv(
+            ticker_path,
+            names=[
+                "Date", "Open", "Low", "High",
+                "Close", "Volume", "OpenInterest"
+            ],
+            index_col="Date", parse_dates=True
         )
         self.tickers_data[ticker]["Ticker"] = ticker
 
@@ -93,11 +92,10 @@ class YahooDailyCsvBarPriceHandler(AbstractBarPriceHandler):
                 row0 = dft.iloc[0]
 
                 close = PriceParser.parse(row0["Close"])
-                adj_close = PriceParser.parse(row0["Adj Close"])
 
                 ticker_prices = {
                     "close": close,
-                    "adj_close": adj_close,
+                    "adj_close": close,
                     "timestamp": dft.index[0]
                 }
                 self.tickers[ticker] = ticker_prices
@@ -118,10 +116,10 @@ class YahooDailyCsvBarPriceHandler(AbstractBarPriceHandler):
         and return a BarEvent
         """
         open_price = PriceParser.parse(row["Open"])
-        high_price = PriceParser.parse(row["High"])
         low_price = PriceParser.parse(row["Low"])
+        high_price = PriceParser.parse(row["High"])
         close_price = PriceParser.parse(row["Close"])
-        adj_close_price = PriceParser.parse(row["Adj Close"])
+        adj_close_price = PriceParser.parse(row["Close"])
         volume = int(row["Volume"])
         bev = BarEvent(
             ticker, index, period, open_price,
@@ -129,30 +127,6 @@ class YahooDailyCsvBarPriceHandler(AbstractBarPriceHandler):
             volume, adj_close_price
         )
         return bev
-
-    def _store_event(self, event):
-        """
-        Store price event for closing price and adjusted closing price
-        """
-        ticker = event.ticker
-        # If the calc_adj_returns flag is True, then calculate
-        # and store the full list of adjusted closing price
-        # percentage returns in a list
-        # TODO: Make this faster
-        if self.calc_adj_returns:
-            prev_adj_close = self.tickers[ticker][
-                "adj_close"
-            ] / float(PriceParser.PRICE_MULTIPLIER)
-            cur_adj_close = event.adj_close_price / float(
-                PriceParser.PRICE_MULTIPLIER
-            )
-            self.tickers[ticker][
-                "adj_close_ret"
-            ] = cur_adj_close / prev_adj_close - 1.0
-            self.adj_close_returns.append(self.tickers[ticker]["adj_close_ret"])
-        self.tickers[ticker]["close"] = event.close_price
-        self.tickers[ticker]["adj_close"] = event.adj_close_price
-        self.tickers[ticker]["timestamp"] = event.time
 
     def stream_next(self):
         """
@@ -165,7 +139,7 @@ class YahooDailyCsvBarPriceHandler(AbstractBarPriceHandler):
             return
         # Obtain all elements of the bar from the dataframe
         ticker = row["Ticker"]
-        period = 86400  # Seconds in a day
+        period = 60  # Seconds in a minute
         # Create the tick event for the queue
         bev = self._create_event(index, period, ticker, row)
         # Store event
